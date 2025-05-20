@@ -1,4 +1,4 @@
 streamlit
-mem0
+mem0ai
 openai
 python-dotenv
