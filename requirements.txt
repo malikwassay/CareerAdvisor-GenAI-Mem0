@@ -1,0 +1,4 @@
+streamlit
+mem0
+openai
+python-dotenv
