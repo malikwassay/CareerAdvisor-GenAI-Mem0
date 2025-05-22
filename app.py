@@ -34,7 +34,7 @@ def get_openai_client():
         return None
     return openai.OpenAI(api_key=openai_api_key)
 
-# Define the career advisor system role with updated instructions for concise responses
+# Define the career advisor system role
 CAREER_ADVISOR_SYSTEM_ROLE = """
 You are CareerCoach AI, an expert career and job advisor leveraging detailed user profile information. 
 Your role is to provide personalized career guidance based on:
@@ -66,18 +66,32 @@ When advising users on career development:
 Always maintain a supportive, encouraging tone while being honest about the skills gap or additional qualifications they might need to achieve their goals.
 """
 
+# Define the onboarding system role
+ONBOARDING_SYSTEM_ROLE = """
+You are CareerCoach AI's onboarding assistant. Your role is to collect comprehensive user information through a friendly, conversational interview process.
+
+You need to collect information in these categories:
+1. Personal Information: Full name, date of birth, location, contact details (email, phone, LinkedIn), marital status
+2. Current Job Information: Current role, company, salary, employment type (full-time/part-time/contract), work setting (remote/hybrid/onsite)
+3. Technical Skills: Programming languages, tools, frameworks, certifications
+4. Work Experience: Previous roles, companies, duration, key responsibilities
+5. Career Aspirations: Desired role, preferred industry, work setting preferences, relocation willingness
+6. Timeline & Milestones: Contract end dates, certification completion dates, job search timeline
+
+IMPORTANT GUIDELINES:
+- Ask questions in a natural, conversational manner
+- Ask 2-3 related questions at a time to keep the conversation flowing
+- Be encouraging and supportive throughout the process
+- After each user response, acknowledge what you've learned before asking the next questions
+- When you have collected sufficient information across all categories, say: "Perfect! I now have all the information I need to provide you with personalized career advice. You can now ask me any career-related questions!"
+
+Start the conversation by explaining that you need to learn about them first, then begin with basic personal information.
+"""
+
 def format_name(name):
-    """
-    Format name to properly capitalize each word
-    Examples:
-    - wassay haider -> Wassay Haider
-    - WASSAY HAIDER -> Wassay Haider
-    - wAsSaY hAiDeR -> Wassay Haider
-    """
+    """Format name to properly capitalize each word"""
     if not name:
         return ""
-        
-    # Split by spaces and format each word
     words = name.split()
     formatted_words = [word.capitalize() for word in words]
     return " ".join(formatted_words)
@@ -89,6 +103,38 @@ def is_full_name(name):
     words = name.strip().split()
     return len(words) >= 2
 
+def check_user_exists(user_id):
+    """Check if user exists in mem0 by searching for any memories"""
+    try:
+        client = get_memory_client()
+        if not client:
+            return False
+        
+        # Try to search for any information about the user
+        results = client.search("personal information", user_id=user_id)
+        return len(results) > 0
+    except Exception as e:
+        st.error(f"Error checking user existence: {e}")
+        return False
+
+def add_memory_from_conversation(user_message, assistant_message, user_id):
+    """Add memory from a conversation turn"""
+    try:
+        client = get_memory_client()
+        if not client:
+            return False
+        
+        messages = [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": assistant_message}
+        ]
+        
+        client.add(messages, user_id=user_id)
+        return True
+    except Exception as e:
+        st.error(f"Error adding memory: {e}")
+        return False
+
 def search_memory(query, user_id):
     """Search memory and return results"""
     try:
@@ -99,31 +145,32 @@ def search_memory(query, user_id):
         st.error(f"Error searching memory: {e}")
         return None
 
-def get_chatgpt_response(memory_results, query):
-    """Get response from ChatGPT based on memory results with improved query understanding"""
+def get_chatgpt_response(memory_results, query, system_role=CAREER_ADVISOR_SYSTEM_ROLE):
+    """Get response from ChatGPT based on memory results"""
     try:
-        # Create a prompt that includes the memory search results and emphasizes concise responses
-        prompt = f"""
-        The user asked: "{query}"
+        if memory_results:
+            prompt = f"""
+            The user asked: "{query}"
+            
+            Information retrieved from memory about the user:
+            {json.dumps(memory_results, indent=2)}
+            
+            Remember to:
+            1. Understand the specific intent of the question - is it a simple factual query or a request for advice?
+            2. For factual questions (like "What is my birthdate?"), provide ONLY the specific fact with minimal context.
+            3. For advice questions, provide personalized guidance considering their profile information.
+            4. Always be concise and directly address their question.
+            
+            Now, provide a personalized response that directly answers their specific question.
+            """
+        else:
+            prompt = query
         
-        Information retrieved from memory about the user:
-        {json.dumps(memory_results, indent=2)}
-        
-        Remember to:
-        1. Understand the specific intent of the question - is it a simple factual query or a request for advice?
-        2. For factual questions (like "What is my birthdate?"), provide ONLY the specific fact with minimal context.
-        3. For advice questions, provide personalized guidance considering their profile information.
-        4. Always be concise and directly address their question.
-        
-        Now, provide a personalized response that directly answers their specific question.
-        """
-        
-        # Call the OpenAI API with the career advisor system role
         openai_client = get_openai_client()
         response = openai_client.chat.completions.create(
-            model="gpt-4.1-mini-2025-04-14",  # Using a more capable model for better career advice
+            model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": CAREER_ADVISOR_SYSTEM_ROLE},
+                {"role": "system", "content": system_role},
                 {"role": "user", "content": prompt}
             ]
         )
@@ -133,11 +180,37 @@ def get_chatgpt_response(memory_results, query):
         st.error(f"Error getting ChatGPT response: {e}")
         return f"I encountered an error while processing your request: {str(e)}"
 
+def get_onboarding_response(conversation_history):
+    """Get onboarding response from ChatGPT"""
+    try:
+        openai_client = get_openai_client()
+        
+        messages = [{"role": "system", "content": ONBOARDING_SYSTEM_ROLE}]
+        messages.extend(conversation_history)
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"Error getting onboarding response: {e}")
+        return f"I encountered an error: {str(e)}"
+
 # Initialize session state variables
 if 'name_entered' not in st.session_state:
     st.session_state.name_entered = False
 if 'user_id' not in st.session_state:
     st.session_state.user_id = ""
+if 'user_exists' not in st.session_state:
+    st.session_state.user_exists = False
+if 'onboarding_complete' not in st.session_state:
+    st.session_state.onboarding_complete = False
+if 'conversation_history' not in st.session_state:
+    st.session_state.conversation_history = []
+if 'onboarding_started' not in st.session_state:
+    st.session_state.onboarding_started = False
 if 'name_error' not in st.session_state:
     st.session_state.name_error = ""
 if 'query' not in st.session_state:
@@ -148,80 +221,131 @@ if 'reset_name_clicked' not in st.session_state:
     st.session_state.reset_name_clicked = False
 if 'show_names' not in st.session_state:
     st.session_state.show_names = True
+if 'registered_users' not in st.session_state:
+    st.session_state.registered_users = []
 
-# List of all available names
-available_names = [
-    "Jennifer Petty", "Emily Lopez", "Amy Hancock", "Jennifer Morris", "James Santos",
-    "Lisa French", "Ann Mendez", "Victor Edwards", "Sandra Smith", "Timothy Stuart",
-    "Linda Ramirez", "Melanie Cook", "Jennifer Marshall", "Tanya Miller DVM", "Jeffery Jackson",
-    "Christopher Proctor", "Kristi Hart", "Tim Cruz", "Steven Garcia DDS", "Rachel Montgomery",
-    "Caitlin Marshall", "Jesse Jenkins", "Timothy Singh", "Monique Freeman", "Michael Murray",
-    "Heather Davis", "Jennifer Moody", "Roberta Dougherty", "Karen Lewis", "Thomas Burgess",
-    "Carla Ball", "Douglas Webster", "Jill Nunez", "Joseph Young", "Molly Davis",
-    "Glen Gonzalez", "Richard Martin", "Jesse Hayes", "Lauren Fischer", "Sheila King",
-    "Jacob Smith", "Vickie Garcia", "Micheal Robinson", "Dr. Brandy Gallagher", "James Hunt",
-    "Timothy Chan", "Kevin Patterson", "Alyssa Bennett", "Whitney Jordan", "Kyle Neal"
-]
+def get_all_users_from_mem0():
+    """Fetch all user names from mem0 using the users() API"""
+    try:
+        client = get_memory_client()
+        if not client:
+            return []
+        
+        # Use the direct users() API method
+        results = client.users()
+        
+        # Extract just the names from the results
+        user_names = []
+        if results and 'results' in results:
+            for user in results['results']:
+                if 'name' in user:
+                    user_names.append(user['name'])
+        
+        return sorted(user_names)
+    except Exception as e:
+        st.error(f"Error fetching users from mem0: {e}")
+        return []
 
-# Callback functions for buttons that update session state
+# Get all users from mem0 dynamically
+@st.cache_data(ttl=300)  # Cache for 5 minutes to avoid repeated API calls
+def get_cached_users():
+    return get_all_users_from_mem0()
+
+existing_users = get_cached_users()
+
+# Callback functions for buttons
 def on_name_submit():
-    """Set flag when name is submitted"""
     st.session_state.submit_clicked = True
-    # Hide the names once a name is submitted
     st.session_state.show_names = False
 
 def on_reset_name():
-    """Set flag when name reset is requested"""
     st.session_state.reset_name_clicked = True
-    # Show the names again when resetting
     st.session_state.show_names = True
+    st.session_state.onboarding_complete = False
+    st.session_state.onboarding_started = False
+    st.session_state.conversation_history = []
 
 # App header
 st.title("CareerCoach AI")
 st.markdown("### Your Personalized Career Advisor")
 st.markdown("---")
 
-# Handle reset name request (must be processed before the main interface logic)
+# Handle reset name request
 if st.session_state.reset_name_clicked:
     st.session_state.name_entered = False
+    st.session_state.user_exists = False
     st.session_state.reset_name_clicked = False
 
 # Sidebar with available names
 if not st.session_state.name_entered and st.session_state.show_names:
     with st.sidebar:
         st.header("Available Profiles")
-        st.markdown("##### Click on a name to begin!")
         
-        # Calculate midpoint to split the names into two columns if needed
-        midpoint = len(available_names) // 2
+        # Refresh button to reload users from mem0
+        if st.button("🔄 Refresh User List", help="Reload users from database"):
+            st.cache_data.clear()  # Clear cache to force refresh
+            st.rerun()
         
-        # Create two columns in the sidebar
-        col1, col2 = st.columns(2)
-        
-        # Display first half of names in first column
-        with col1:
-            for name in available_names[:midpoint]:
-                if st.button(name, key=f"btn_{name}", use_container_width=True):
+        if st.session_state.registered_users:
+            st.subheader("📝 Your Registered Profiles")
+            for name in st.session_state.registered_users:
+                if st.button(f"✅ {name}", key=f"reg_btn_{name}", use_container_width=True):
                     st.session_state.user_id = name
                     st.session_state.name_entered = True
+                    st.session_state.user_exists = True
+                    st.session_state.onboarding_complete = True
                     st.session_state.show_names = False
                     st.rerun()
+            
+            st.markdown("---")
         
-        # Display second half of names in second column
-        with col2:
-            for name in available_names[midpoint:]:
-                if st.button(name, key=f"btn_{name}", use_container_width=True):
-                    st.session_state.user_id = name
-                    st.session_state.name_entered = True
-                    st.session_state.show_names = False
-                    st.rerun()
+        if existing_users:
+            st.subheader("👥 Existing Users")
+            st.caption(f"Found {len(existing_users)} users in database")
+            
+            # Calculate midpoint for two columns
+            midpoint = len(existing_users) // 2 if len(existing_users) > 1 else 1
+            
+            if len(existing_users) > 10:  # If many users, show in two columns
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    for name in existing_users[:midpoint]:
+                        if st.button(name, key=f"btn_{name}", use_container_width=True):
+                            st.session_state.user_id = name
+                            st.session_state.name_entered = True
+                            st.session_state.user_exists = True
+                            st.session_state.onboarding_complete = True
+                            st.session_state.show_names = False
+                            st.rerun()
+                
+                with col2:
+                    for name in existing_users[midpoint:]:
+                        if st.button(name, key=f"btn_{name}", use_container_width=True):
+                            st.session_state.user_id = name
+                            st.session_state.name_entered = True
+                            st.session_state.user_exists = True
+                            st.session_state.onboarding_complete = True
+                            st.session_state.show_names = False
+                            st.rerun()
+            else:  # If few users, show in single column
+                for name in existing_users:
+                    if st.button(name, key=f"btn_{name}", use_container_width=True):
+                        st.session_state.user_id = name
+                        st.session_state.name_entered = True
+                        st.session_state.user_exists = True
+                        st.session_state.onboarding_complete = True
+                        st.session_state.show_names = False
+                        st.rerun()
+        else:
+            st.info("No existing users found in database.")
+            st.caption("Enter your name to create a new profile!")
         
         st.markdown("---")
-        st.caption("These are sample profiles for demonstration purposes.")
+        st.caption("Users are dynamically loaded from mem0 database.")
 
-# Name entry popup if name hasn't been entered yet
+# Name entry interface
 if not st.session_state.name_entered:
-    # Create a centered card for name entry
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("## Welcome to CareerCoach AI")
@@ -234,76 +358,141 @@ if not st.session_state.name_entered:
             
         st.button("Continue", on_click=on_name_submit)
         
-        # Process the submission after button is clicked
         if st.session_state.submit_clicked:
             if not name_input:
                 st.session_state.name_error = "Please enter your name to continue."
-                st.session_state.submit_clicked = False  # Reset the flag
+                st.session_state.submit_clicked = False
             elif not is_full_name(name_input):
                 st.session_state.name_error = "Please enter your full name (first and last name)."
-                st.session_state.submit_clicked = False  # Reset the flag
+                st.session_state.submit_clicked = False
             else:
                 st.session_state.name_error = ""
-                st.session_state.user_id = format_name(name_input)
+                formatted_name = format_name(name_input)
+                st.session_state.user_id = formatted_name
                 st.session_state.name_entered = True
-                st.session_state.submit_clicked = False  # Reset the flag
-else:
-    # Main application after name has been entered
-    st.write(f"Hello, **{st.session_state.user_id}**! How can I help with your career today?")
+                st.session_state.submit_clicked = False
+                
+                # Check if user exists in mem0
+                st.session_state.user_exists = check_user_exists(formatted_name)
+                
+                if st.session_state.user_exists:
+                    st.session_state.onboarding_complete = True
+                else:
+                    st.session_state.onboarding_complete = False
+                    st.session_state.onboarding_started = False
+                
+                st.rerun()
+
+# Main application interface
+elif st.session_state.name_entered:
+
     
-    # Provide example queries to guide users
-    with st.expander("Example questions you can ask"):
-        st.markdown("""
-        - What is my current salary?
-        - When does my current contract end?
-        - What are my technical skills?
-        - What career path should I pursue with my background?
-        - How can I transition to a data science role?
-        - What skills should I develop for my desired role?
-        - What's a realistic timeline for my career transition?
-        """)
-    
-    # Input area for user's career question
-    query = st.text_area("Your career question:", 
-                         value=st.session_state.query,
-                         height=80, 
-                         placeholder="Ask me anything about your career, skills, or profile...")
-    
-    # Clear the stored query once it's displayed
-    if st.session_state.query:
-        st.session_state.query = ""
-    
-    if st.button("Get Response"):
-        if query:
-            with st.spinner("Searching for your profile information..."):
-                memory_results = search_memory(query, st.session_state.user_id)
+    # Onboarding process for new users
+    if not st.session_state.onboarding_complete:
+        st.markdown(f"## Hello, {st.session_state.user_id.split()[0]}!")
+        
+        if not st.session_state.onboarding_started:
+            st.markdown("I don't have any information about you yet, but I'd love to learn more so I can provide personalized career advice!")
+            st.markdown("I'll ask you some questions to understand your background, skills, and career goals.")
             
-            if memory_results:
-                st.success("Profile information found!")
-                
-                # Option to view raw profile data (collapsible)
-                with st.expander("View your profile information", expanded=False):
-                    st.json(memory_results)
-                
-                with st.spinner("Analyzing your career situation..."):
-                    response = get_chatgpt_response(memory_results, query)
-                
-                # Display the response in a clean, highlighted box
-                st.markdown("## Your Answer")
-                # st.markdown("---")
-                st.markdown(f"<div style='background-color:#393E46 ; padding:2px; border-radius:10px;'>{response}</div>", 
-                            unsafe_allow_html=True)
-            else:
-                st.error("I couldn't find your profile information. Please check that you've entered your name correctly or contact support.")
+            if st.button("Let's get started! 🚀"):
+                st.session_state.onboarding_started = True
+                # Initialize conversation with first onboarding message
+                first_response = get_onboarding_response([{"role": "user", "content": "I'm ready to get started with the onboarding process."}])
+                st.session_state.conversation_history.append({"role": "assistant", "content": first_response})
+                st.rerun()
+        
         else:
-            st.warning("Please enter a career question to get personalized advice.")
+            # Show onboarding conversation
+            st.markdown("### Profile Setup")
+            
+            # Display conversation history
+            for i, message in enumerate(st.session_state.conversation_history):
+                if message["role"] == "assistant":
+                    st.markdown(f"**CareerCoach AI:** {message['content']}")
+                else:
+                    st.markdown(f"**You:** {message['content']}")
+                st.markdown("---")
+            
+            # Input for user response
+            user_input = st.text_area("Your response:", key=f"onboarding_input_{len(st.session_state.conversation_history)}", height=100)
+            
+            if st.button("Send Response"):
+                if user_input:
+                    # Add user message to conversation
+                    st.session_state.conversation_history.append({"role": "user", "content": user_input})
+                    
+                    # Get AI response
+                    ai_response = get_onboarding_response(st.session_state.conversation_history)
+                    
+                    # Add AI response to conversation
+                    st.session_state.conversation_history.append({"role": "assistant", "content": ai_response})
+                    
+                    # Store the conversation turn in mem0
+                    add_memory_from_conversation(user_input, ai_response, st.session_state.user_id)
+                    
+                    # Check if onboarding is complete
+                    if "now have all the information I need" in ai_response.lower() or "you can now ask me" in ai_response.lower():
+                        st.session_state.onboarding_complete = True
+                        # Add user to registered users list
+                        if st.session_state.user_id not in st.session_state.registered_users:
+                            st.session_state.registered_users.append(st.session_state.user_id)
+                    
+                    st.rerun()
     
-    # Add option to change name (small, at the bottom)
-    st.markdown("---")
-    st.button("Change your name", 
-              type="secondary", 
-              help="Click to re-enter your name", 
-              on_click=on_reset_name)
+    # Regular career advice interface for existing/completed users
+    else:
+        st.write(f"Hello, **{st.session_state.user_id}**! How can I help with your career today?")
+        
+        # Provide example queries
+        with st.expander("Example questions you can ask"):
+            st.markdown("""
+            - What is my current salary?
+            - When does my current contract end?
+            - What are my technical skills?
+            - What career path should I pursue with my background?
+            - How can I transition to a data science role?
+            - What skills should I develop for my desired role?
+            - What's a realistic timeline for my career transition?
+            """)
+        
+        # Input area for career questions
+        query = st.text_area("Your career question:", 
+                             value=st.session_state.query,
+                             height=80, 
+                             placeholder="Ask me anything about your career, skills, or profile...")
+        
+        if st.session_state.query:
+            st.session_state.query = ""
+        
+        if st.button("Get Response"):
+            if query:
+                with st.spinner("Searching for your profile information..."):
+                    memory_results = search_memory(query, st.session_state.user_id)
+                
+                if memory_results:
+                    st.success("Profile information found!")
+                    
+                    with st.expander("View your profile information", expanded=False):
+                        st.json(memory_results)
+                    
+                    with st.spinner("Analyzing your career situation..."):
+                        response = get_chatgpt_response(memory_results, query)
+                    
+                    st.markdown("## Your Answer")
+                    st.markdown(f"<div style='background-color:#393E46; padding:20px; border-radius:10px; color:white;'>{response}</div>", 
+                                unsafe_allow_html=True)
+                else:
+                    st.error("I couldn't find your profile information. This might be a technical issue - please try again.")
+            else:
+                st.warning("Please enter a career question to get personalized advice.")
+        
+        # Option to change name
+        st.markdown("---")
+        st.button("Change your name", 
+                  type="secondary", 
+                  help="Click to re-enter your name", 
+                  on_click=on_reset_name)
 
 # Footer
 st.markdown("---")
